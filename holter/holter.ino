@@ -1,5 +1,8 @@
 #include <Wire.h>
 #include <driver/i2s.h>
+#include <SPI.h>
+#include <SD.h>
+#include <esp_sleep.h>
 
 #define MMA8452_ADDRESS 0x1C  // Адрес датчика
 #define REG_WHO_AM_I 0x0D     // Регистр идентификатора
@@ -13,6 +16,11 @@
 #define I2S_SD 26   // Serial Data (DOUT)
 #define I2S_SCK 27  // Bit Clock (BCLK)
 
+#define SD_CS 5     // Chip Select для SD-карты
+
+const unsigned long measurementInterval = 10 * 60 * 1000; // 10 минут в миллисекундах
+const unsigned long measurementDuration = 20 * 1000; // 20 секунд в миллисекундах
+
 void setup() {
     Serial.begin(115200);
     Wire.begin(SDA_PIN, SCL_PIN);
@@ -23,19 +31,29 @@ void setup() {
     }
     
     initializeI2S();
+    initializeSD();
 }
 
 void loop() {
-    int16_t x, y, z;
-    readAccelerometer(x, y, z);
+    unsigned long startTime = millis();
+    while (millis() - startTime < measurementDuration) {
+        int16_t x, y, z;
+        readAccelerometer(x, y, z);
+        
+        Serial.print("X: "); Serial.print(x);
+        Serial.print(" Y: "); Serial.print(y);
+        Serial.print(" Z: "); Serial.println(z);
+        
+        int16_t micSample = readMicrophone();
+        Serial.print("Mic Sample: "); Serial.println(micSample);
+        
+        saveToSD(x, y, z, micSample);
+        delay(100);
+    }
     
-    Serial.print("X: "); Serial.print(x);
-    Serial.print(" Y: "); Serial.print(y);
-    Serial.print(" Z: "); Serial.println(z);
-    
-    readMicrophone();
-    
-    delay(100);
+    Serial.println("Переход в режим сна...");
+    esp_sleep_enable_timer_wakeup(measurementInterval * 1000);
+    esp_deep_sleep_start();
 }
 
 bool initializeMMA8452() {
@@ -100,10 +118,30 @@ void initializeI2S() {
     i2s_set_pin(I2S_NUM_0, &pin_config);
 }
 
-void readMicrophone() {
+int16_t readMicrophone() {
     int16_t sample_buffer[64];
     size_t bytes_read;
     i2s_read(I2S_NUM_0, sample_buffer, sizeof(sample_buffer), &bytes_read, portMAX_DELAY);
-    
-    Serial.print("Mic Sample: "); Serial.println(sample_buffer[0]);
+    return sample_buffer[0];
+}
+
+void initializeSD() {
+    if (!SD.begin(SD_CS)) {
+        Serial.println("Ошибка инициализации SD-карты");
+        while (1);
+    }
+    Serial.println("SD-карта успешно инициализирована");
+}
+
+void saveToSD(int16_t x, int16_t y, int16_t z, int16_t micSample) {
+    File dataFile = SD.open("data.txt", FILE_APPEND);
+    if (dataFile) {
+        dataFile.print("X: "); dataFile.print(x);
+        dataFile.print(" Y: "); dataFile.print(y);
+        dataFile.print(" Z: "); dataFile.print(z);
+        dataFile.print(" Mic: "); dataFile.println(micSample);
+        dataFile.close();
+    } else {
+        Serial.println("Ошибка записи на SD-карту");
+    }
 }
