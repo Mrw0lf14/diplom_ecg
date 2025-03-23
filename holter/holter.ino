@@ -26,11 +26,11 @@
 #define SD_MISO 12
 
 // --- Wi-Fi ---
-#define WIFI_SSID "MGTS_GPON_AC25"
-#define WIFI_PASS "JPMGHLF4"
-#define SERVER_URL "http://192.168.1.65:5000/data"
+#define WIFI_SSID "Odeyalo"
+#define WIFI_PASS "20012005"
+#define SERVER_URL "http://192.168.3.6:5000/data"
 
-const unsigned long measurementInterval = 5 * 1000;  // 5 секунд (для тестов)
+const unsigned long measurementInterval = 20 * 1000;  // 5 секунд (для тестов)
 const unsigned long measurementDuration = 20 * 1000; // 20 секунд
 
 bool wifiConnected = false;
@@ -189,7 +189,10 @@ void sendDataToServer(int16_t x, int16_t y, int16_t z, int16_t micSample) {
         http.begin(SERVER_URL);
         http.addHeader("Content-Type", "application/json");
 
-        String json = "{\"adc\":" + String(x) +
+        String deviceName = "ESP32_1";  // Уникальное имя устройства
+
+        String json = "{\"device_name\":\"" + deviceName + "\","
+                      "\"adc\":" + String(x) +
                       ",\"gyro\":" + String(y) +
                       ",\"mic\":" + String(micSample) + "}";
 
@@ -200,3 +203,4 @@ void sendDataToServer(int16_t x, int16_t y, int16_t z, int16_t micSample) {
         Serial.println("Wi-Fi отключен!");
     }
 }
+
