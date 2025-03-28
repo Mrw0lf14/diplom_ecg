@@ -5,6 +5,7 @@
 #include <WiFi.h>
 #include <HTTPClient.h>
 #include "esp_adc/adc_cali.h"
+
 // --- Пины ---
 #define MMA8452_ADDRESS 0x1C
 #define REG_WHO_AM_I 0x0D
@@ -39,7 +40,7 @@
 #define DEVICE_NAME "esp_device"
 
 const unsigned long MEASUREMENT_INTERVAL = 4;  // 4 мс = 250 Гц
-const unsigned long UPLOAD_INTERVAL = 10000;      // 10 секунд
+const unsigned long UPLOAD_INTERVAL = 10000;    // 10 минут (600000 мс)
 unsigned long startMeasureTime = 0;
 unsigned long startUploadTime = 0;
 bool wifiConnected = false;
@@ -47,7 +48,7 @@ bool wifiConnected = false;
 void setup() {
     Serial.begin(115200);
     Wire.begin(SDA_PIN, SCL_PIN);
-    initializeSD();
+    initializeSD(); // очищает файл при запуске
     if (!initializeMMA8452()) Serial.println("Ошибка MMA8452");
     initializeI2S();
     // Конфигурация ADC2 (новый API)
@@ -95,8 +96,7 @@ void loop() {
 
         startMeasureTime = millis();
     }
-    if (millis() - startUploadTime > UPLOAD_INTERVAL)
-    {
+    if (millis() - startUploadTime > UPLOAD_INTERVAL) {
       if (wifiConnected) {
         sendDataFromSDToServer();
       }
@@ -178,13 +178,12 @@ void initializeSD() {
     }
     Serial.println("SD-карта готова!");
     
-    File file = SD.open("/data.csv", FILE_READ);
-    if (!file) {
-        File newFile = SD.open("/data.csv", FILE_WRITE);
-        if (newFile) {
-            newFile.println("Дата,Время,АЦП,Гироскоп,Микрофон");
-            newFile.close();
-        }
+    // Очищаем файл при запуске
+    SD.remove("/data.csv");
+    File newFile = SD.open("/data.csv", FILE_WRITE);
+    if (newFile) {
+        newFile.println("Дата,Время,АЦП,Гироскоп,Микрофон");
+        newFile.close();
     }
 }
 
@@ -232,42 +231,49 @@ void sendDataFromSDToServer() {
     // Пропускаем строку заголовка
     String header = file.readStringUntil('\n');
   
-    // Читаем каждую строку, формируем JSON и отправляем
+    // Считываем все строки и сохраняем последнюю непустую запись
+    String lastLine = "";
     while (file.available()) {
         String line = file.readStringUntil('\n');
-        if (line.length() == 0) continue;
-      
-        // Ожидаемый формат: Дата,Время,АЦП,Гироскоп,Микрофон
-        int idx1 = line.indexOf(',');
-        int idx2 = line.indexOf(',', idx1 + 1);
-        int idx3 = line.indexOf(',', idx2 + 1);
-        int idx4 = line.indexOf(',', idx3 + 1);
-        if (idx1 == -1 || idx2 == -1 || idx3 == -1 || idx4 == -1) continue;
-      
-        String adcStr = line.substring(idx2 + 1, idx3);
-        String gyroStr = line.substring(idx3 + 1, idx4);
-        String micStr = line.substring(idx4 + 1);
-      
-        // Формирование JSON-пакета
-        String payload = "{";
-        payload += "\"device_name\":\"" + String(DEVICE_NAME) + "\",";
-        payload += "\"adc\":" + adcStr + ",";
-        payload += "\"gyro\":" + gyroStr + ",";
-        payload += "\"mic\":" + micStr;
-        payload += "}";
-      
-        HTTPClient http;
-        http.begin(SERVER_URL);
-        http.addHeader("Content-Type", "application/json");
-        int httpResponseCode = http.POST(payload);
-        Serial.printf("Ответ сервера для строки: %d\n", httpResponseCode);
-        http.end();
-      
-        delay(1); // Небольшая задержка между отправками
+        if (line.length() > 0) {
+            lastLine = line;
+        }
     }
     file.close();
   
-    // После успешной отправки очищаем файл: удаляем и создаём заново с заголовком
+    if (lastLine.length() == 0) {
+        Serial.println("Нет данных для отправки.");
+    } else {
+        // Ожидаемый формат: Дата,Время,АЦП,Гироскоп,Микрофон
+        int idx1 = lastLine.indexOf(',');
+        int idx2 = lastLine.indexOf(',', idx1 + 1);
+        int idx3 = lastLine.indexOf(',', idx2 + 1);
+        int idx4 = lastLine.indexOf(',', idx3 + 1);
+        if (idx1 == -1 || idx2 == -1 || idx3 == -1 || idx4 == -1) {
+            Serial.println("Неверный формат данных.");
+        } else {
+            String adcStr = lastLine.substring(idx2 + 1, idx3);
+            String gyroStr = lastLine.substring(idx3 + 1, idx4);
+            String micStr = lastLine.substring(idx4 + 1);
+          
+            // Формирование JSON-пакета
+            String payload = "{";
+            payload += "\"device_name\":\"" + String(DEVICE_NAME) + "\",";
+            payload += "\"adc\":" + adcStr + ",";
+            payload += "\"gyro\":" + gyroStr + ",";
+            payload += "\"mic\":" + micStr;
+            payload += "}";
+          
+            HTTPClient http;
+            http.begin(SERVER_URL);
+            http.addHeader("Content-Type", "application/json");
+            int httpResponseCode = http.POST(payload);
+            Serial.printf("Ответ сервера: %d\n", httpResponseCode);
+            http.end();
+        }
+    }
+  
+    // После отправки очищаем файл: удаляем и создаём заново с заголовком
     SD.remove("/data.csv");
     File newFile = SD.open("/data.csv", FILE_WRITE);
     if (newFile) {
@@ -279,4 +285,3 @@ void sendDataFromSDToServer() {
     WiFi.disconnect(true);
     WiFi.mode(WIFI_OFF);
 }
-
