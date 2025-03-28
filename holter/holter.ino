@@ -4,8 +4,7 @@
 #include <SD.h>
 #include <WiFi.h>
 #include <HTTPClient.h>
-#include <esp_sleep.h>
-
+#include "esp_adc/adc_cali.h"
 // --- Пины ---
 #define MMA8452_ADDRESS 0x1C
 #define REG_WHO_AM_I 0x0D
@@ -25,14 +24,24 @@
 #define SD_CLK 14
 #define SD_MISO 12
 
+// --- ADC (используем ADC2) ---
+// На ESP32, ADC2_CHANNEL_0 -> GPIO0, ADC2_CHANNEL_1 -> GPIO2, ADC2_CHANNEL_2 -> GPIO4
+#define ADC_CHANNEL_0 ADC2_CHANNEL_0
+#define ADC_CHANNEL_1 ADC2_CHANNEL_1
+#define ADC_CHANNEL_2 ADC2_CHANNEL_2
+
 // --- Wi-Fi ---
-#define WIFI_SSID "Odeyalo"
-#define WIFI_PASS "20012005"
-#define SERVER_URL "http://192.168.3.6:5000/data"
+#define WIFI_SSID "applied_robotics"
+#define WIFI_PASS "listentome"
+#define SERVER_URL "http://192.168.1.203:5000/data"
 
-const unsigned long measurementInterval = 20 * 1000;  // 5 секунд (для тестов)
-const unsigned long measurementDuration = 20 * 1000; // 20 секунд
+// Имя устройства для отправки на сервер
+#define DEVICE_NAME "esp_device"
 
+const unsigned long MEASUREMENT_INTERVAL = 4;  // 4 мс = 250 Гц
+const unsigned long UPLOAD_INTERVAL = 10000;      // 10 секунд
+unsigned long startMeasureTime = 0;
+unsigned long startUploadTime = 0;
 bool wifiConnected = false;
 
 void setup() {
@@ -41,7 +50,10 @@ void setup() {
     initializeSD();
     if (!initializeMMA8452()) Serial.println("Ошибка MMA8452");
     initializeI2S();
-    
+    // Конфигурация ADC2 (новый API)
+    adc2_config_channel_atten(ADC_CHANNEL_0, ADC_ATTEN_DB_0);
+    adc2_config_channel_atten(ADC_CHANNEL_1, ADC_ATTEN_DB_0);
+    adc2_config_channel_atten(ADC_CHANNEL_2, ADC_ATTEN_DB_0);
     // Попытка подключения к Wi-Fi
     WiFi.begin(WIFI_SSID, WIFI_PASS);
     Serial.print("Подключение к Wi-Fi");
@@ -59,28 +71,38 @@ void setup() {
     } else {
         Serial.println("\nWi-Fi не подключился, запись только на SD-карту!");
     }
+
+    startMeasureTime = millis();
+    startUploadTime = millis();
 }
 
 void loop() {
-    unsigned long startTime = millis();
-
-    while (millis() - startTime < measurementDuration) {
+    if (millis() - startMeasureTime > MEASUREMENT_INTERVAL) {
         int16_t x, y, z;
         readAccelerometer(x, y, z);
         int16_t micSample = readMicrophone();
 
-        Serial.printf("X: %d Y: %d Z: %d Mic: %d\n", x, y, z, micSample);
+        int raw0, raw2, raw4;
+        // Считываем показания ADC через новый API ADC2
+        adc2_get_raw(ADC_CHANNEL_0, ADC_WIDTH_BIT_12, &raw0);
+        adc2_get_raw(ADC_CHANNEL_1, ADC_WIDTH_BIT_12, &raw2);
+        adc2_get_raw(ADC_CHANNEL_2, ADC_WIDTH_BIT_12, &raw4);
+
+        Serial.printf("X: %d Y: %d Z: %d Mic: %d ADC1_0: %d ADC1_1: %d ADC1_2: %d\n",
+                      x, y, z, micSample, raw0, raw2, raw4);
         
         saveToSD(x, y, z, micSample);
-        if (wifiConnected) {
-            sendDataToServer(x, y, z, micSample);
-        }
-        delay(100);
-    }
 
-    Serial.println("Переход в сон...");
-    esp_sleep_enable_timer_wakeup(measurementInterval * 1000);
-    esp_deep_sleep_start();
+        startMeasureTime = millis();
+    }
+    if (millis() - startUploadTime > UPLOAD_INTERVAL)
+    {
+      if (wifiConnected) {
+        sendDataFromSDToServer();
+      }
+      startUploadTime = millis();
+      Serial.println("Отправка данных на сервер");
+    }
 }
 
 bool initializeMMA8452() {
@@ -183,24 +205,78 @@ void saveToSD(int16_t x, int16_t y, int16_t z, int16_t micSample) {
     }
 }
 
-void sendDataToServer(int16_t x, int16_t y, int16_t z, int16_t micSample) {
+void sendDataFromSDToServer() {
+    // Подключаем Wi‑Fi для отправки
+    WiFi.mode(WIFI_STA);
+    WiFi.begin(WIFI_SSID, WIFI_PASS);
+    Serial.print("Подключаюсь к Wi‑Fi для отправки...");
+    int attempts = 0;
+    while (WiFi.status() != WL_CONNECTED && attempts < 20) {
+        delay(500);
+        Serial.print(".");
+        attempts++;
+    }
     if (WiFi.status() == WL_CONNECTED) {
+        Serial.println("\nWi‑Fi подключён, начинаю отправку данных.");
+    } else {
+        Serial.println("\nНе удалось подключиться к Wi‑Fi, отмена отправки.");
+        return;
+    }
+  
+    File file = SD.open("/data.csv", FILE_READ);
+    if (!file) {
+        Serial.println("Не удалось открыть файл для отправки");
+        return;
+    }
+  
+    // Пропускаем строку заголовка
+    String header = file.readStringUntil('\n');
+  
+    // Читаем каждую строку, формируем JSON и отправляем
+    while (file.available()) {
+        String line = file.readStringUntil('\n');
+        if (line.length() == 0) continue;
+      
+        // Ожидаемый формат: Дата,Время,АЦП,Гироскоп,Микрофон
+        int idx1 = line.indexOf(',');
+        int idx2 = line.indexOf(',', idx1 + 1);
+        int idx3 = line.indexOf(',', idx2 + 1);
+        int idx4 = line.indexOf(',', idx3 + 1);
+        if (idx1 == -1 || idx2 == -1 || idx3 == -1 || idx4 == -1) continue;
+      
+        String adcStr = line.substring(idx2 + 1, idx3);
+        String gyroStr = line.substring(idx3 + 1, idx4);
+        String micStr = line.substring(idx4 + 1);
+      
+        // Формирование JSON-пакета
+        String payload = "{";
+        payload += "\"device_name\":\"" + String(DEVICE_NAME) + "\",";
+        payload += "\"adc\":" + adcStr + ",";
+        payload += "\"gyro\":" + gyroStr + ",";
+        payload += "\"mic\":" + micStr;
+        payload += "}";
+      
         HTTPClient http;
         http.begin(SERVER_URL);
         http.addHeader("Content-Type", "application/json");
-
-        String deviceName = "ESP32_1";  // Уникальное имя устройства
-
-        String json = "{\"device_name\":\"" + deviceName + "\","
-                      "\"adc\":" + String(x) +
-                      ",\"gyro\":" + String(y) +
-                      ",\"mic\":" + String(micSample) + "}";
-
-        int httpResponseCode = http.POST(json);
-        Serial.printf("Ответ сервера: %d\n", httpResponseCode);
+        int httpResponseCode = http.POST(payload);
+        Serial.printf("Ответ сервера для строки: %d\n", httpResponseCode);
         http.end();
-    } else {
-        Serial.println("Wi-Fi отключен!");
+      
+        delay(1); // Небольшая задержка между отправками
     }
+    file.close();
+  
+    // После успешной отправки очищаем файл: удаляем и создаём заново с заголовком
+    SD.remove("/data.csv");
+    File newFile = SD.open("/data.csv", FILE_WRITE);
+    if (newFile) {
+        newFile.println("Дата,Время,АЦП,Гироскоп,Микрофон");
+        newFile.close();
+    }
+  
+    // Отключаем Wi‑Fi для экономии энергии
+    WiFi.disconnect(true);
+    WiFi.mode(WIFI_OFF);
 }
 
