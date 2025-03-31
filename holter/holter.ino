@@ -20,10 +20,10 @@
 #define I2S_SCK 27
 
 // --- SD-карта ---
-#define SD_CS 15
-#define SD_MOSI 13
-#define SD_CLK 14
-#define SD_MISO 12
+#define SD_CS 15    //MOSI
+#define SD_MOSI 13  //MISO
+#define SD_CLK 14   //
+#define SD_MISO 12  //CS
 
 // --- ADC (используем ADC2) ---
 // На ESP32, ADC2_CHANNEL_0 -> GPIO0, ADC2_CHANNEL_1 -> GPIO2, ADC2_CHANNEL_2 -> GPIO4
@@ -32,14 +32,14 @@
 #define ADC_CHANNEL_2 ADC2_CHANNEL_2
 
 // --- Wi-Fi ---
-#define WIFI_SSID "applied_robotics"
-#define WIFI_PASS "listentome"
-#define SERVER_URL "http://192.168.1.203:5000/data"
+#define WIFI_SSID "Odeyalo"
+#define WIFI_PASS "20012005"
+#define SERVER_URL "http://192.168.3.6:5000/data"
 
 // Имя устройства для отправки на сервер
 #define DEVICE_NAME "esp_device"
 
-const unsigned long MEASUREMENT_INTERVAL = 4;  // 4 мс = 250 Гц
+const unsigned long MEASUREMENT_INTERVAL = 40;  // 4 мс = 250 Гц
 const unsigned long UPLOAD_INTERVAL = 10000;    // 10 минут (600000 мс)
 unsigned long startMeasureTime = 0;
 unsigned long startUploadTime = 0;
@@ -172,9 +172,11 @@ int16_t readMicrophone() {
 
 void initializeSD() {
     SPI.begin(SD_CLK, SD_MISO, SD_MOSI, SD_CS);
+    SPI.setDataMode(SPI_MODE3);  // Idle High (CPOL=1, CPHA=1)
     if (!SD.begin(SD_CS)) {
-        Serial.println("Ошибка SD-карты!");
-        while (1);
+        // Serial.println("Ошибка SD-карты!");
+        // while (1);
+        delay(100);
     }
     Serial.println("SD-карта готова!");
     
@@ -182,7 +184,7 @@ void initializeSD() {
     SD.remove("/data.csv");
     File newFile = SD.open("/data.csv", FILE_WRITE);
     if (newFile) {
-        newFile.println("Дата,Время,АЦП,Гироскоп,Микрофон");
+        newFile.println("Date,Time,ADC,Gyro,Mic");
         newFile.close();
     }
 }
@@ -200,7 +202,7 @@ void saveToSD(int16_t x, int16_t y, int16_t z, int16_t micSample) {
         dataFile.printf("%s,%s,%d,%d,%d\n", dateStr, timeStr, x, y, micSample);
         dataFile.close();
     } else {
-        Serial.println("Ошибка записи в SD!");
+        Serial.println("Запись в SD!");
     }
 }
 
@@ -277,7 +279,7 @@ void sendDataFromSDToServer() {
     SD.remove("/data.csv");
     File newFile = SD.open("/data.csv", FILE_WRITE);
     if (newFile) {
-        newFile.println("Дата,Время,АЦП,Гироскоп,Микрофон");
+        newFile.println("Date,Time,ADC,Gyro,Mic");
         newFile.close();
     }
   
