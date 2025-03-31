@@ -4,7 +4,7 @@
 #include <SD.h>
 #include <WiFi.h>
 #include <HTTPClient.h>
-#include "esp_adc/adc_cali.h"
+// #include "esp_adc/adc_cali.h"
 
 // --- Пины ---
 #define MMA8452_ADDRESS 0x1C
@@ -39,11 +39,13 @@
 // Имя устройства для отправки на сервер
 #define DEVICE_NAME "esp_device"
 
-const unsigned long MEASUREMENT_INTERVAL = 40;  // 4 мс = 250 Гц
-const unsigned long UPLOAD_INTERVAL = 10000;    // 10 минут (600000 мс)
+const unsigned long MEASUREMENT_INTERVAL = 40;  // 4 мс = 250 Гц  тут 40 мс
+const unsigned long UPLOAD_INTERVAL = 10000;    // 10 минут (600000 мс) тут 10 секунд
 unsigned long startMeasureTime = 0;
 unsigned long startUploadTime = 0;
 bool wifiConnected = false;
+uint32_t lines_counter = 0;                   //счетчик строк для отправки
+uint32_t num_last_line = 0;                       //номер последней строки
 
 void setup() {
     Serial.begin(115200);
@@ -91,8 +93,8 @@ void loop() {
 
         Serial.printf("X: %d Y: %d Z: %d Mic: %d ADC1_0: %d ADC1_1: %d ADC1_2: %d\n",
                       x, y, z, micSample, raw0, raw2, raw4);
-        
-        saveToSD(x, y, z, micSample);
+
+        saveToSD(raw0, z, micSample);
 
         startMeasureTime = millis();
     }
@@ -174,7 +176,7 @@ void initializeSD() {
     SPI.begin(SD_CLK, SD_MISO, SD_MOSI, SD_CS);
     SPI.setDataMode(SPI_MODE3);  // Idle High (CPOL=1, CPHA=1)
     if (!SD.begin(SD_CS)) {
-        // Serial.println("Ошибка SD-карты!");
+        Serial.println("Ошибка SD-карты!");
         // while (1);
         delay(100);
     }
@@ -189,7 +191,7 @@ void initializeSD() {
     }
 }
 
-void saveToSD(int16_t x, int16_t y, int16_t z, int16_t micSample) {
+void saveToSD(int16_t adc, int16_t gyro_z, int16_t micSample) {
     File dataFile = SD.open("/data.csv", FILE_APPEND);
     if (dataFile) {
         time_t now = time(nullptr);
@@ -198,11 +200,11 @@ void saveToSD(int16_t x, int16_t y, int16_t z, int16_t micSample) {
 
         strftime(dateStr, sizeof(dateStr), "%Y-%m-%d", timeinfo);
         strftime(timeStr, sizeof(timeStr), "%H:%M:%S", timeinfo);
-
-        dataFile.printf("%s,%s,%d,%d,%d\n", dateStr, timeStr, x, y, micSample);
+        lines_counter++;
+        dataFile.printf("%s,%s,%d,%d,%d\n", dateStr, timeStr, adc, gyro_z, micSample);
         dataFile.close();
     } else {
-        Serial.println("Запись в SD!");
+        Serial.println("Ошибка SD!");
     }
 }
 
@@ -235,15 +237,23 @@ void sendDataFromSDToServer() {
   
     // Считываем все строки и сохраняем последнюю непустую запись
     String lastLine = "";
-    while (file.available()) {
+    uint32_t counter = 0;
+    while (file.available() && counter > num_last_line) {
         String line = file.readStringUntil('\n');
+        counter++;
         if (line.length() > 0) {
             lastLine = line;
         }
     }
-    file.close();
-  
-    if (lastLine.length() == 0) {
+    num_last_line += lines_counter;
+    while (lines_counter > 0)
+    {
+      lines_counter--;
+      String line = file.readStringUntil('\n');
+      if (line.length() > 0) {
+          lastLine = line;
+      }
+      if (lastLine.length() == 0) {
         Serial.println("Нет данных для отправки.");
     } else {
         // Ожидаемый формат: Дата,Время,АЦП,Гироскоп,Микрофон
@@ -265,23 +275,18 @@ void sendDataFromSDToServer() {
             payload += "\"gyro\":" + gyroStr + ",";
             payload += "\"mic\":" + micStr;
             payload += "}";
-          
+
+            // Serial.println(payload);      //чтобы посмотреть, что отправили на сервер
             HTTPClient http;
             http.begin(SERVER_URL);
             http.addHeader("Content-Type", "application/json");
             int httpResponseCode = http.POST(payload);
-            Serial.printf("Ответ сервера: %d\n", httpResponseCode);
+            // Serial.printf("Ответ сервера: %d\n", httpResponseCode);
             http.end();
         }
+      }
     }
-  
-    // После отправки очищаем файл: удаляем и создаём заново с заголовком
-    SD.remove("/data.csv");
-    File newFile = SD.open("/data.csv", FILE_WRITE);
-    if (newFile) {
-        newFile.println("Date,Time,ADC,Gyro,Mic");
-        newFile.close();
-    }
+    file.close();
   
     // Отключаем Wi‑Fi для экономии энергии
     WiFi.disconnect(true);
