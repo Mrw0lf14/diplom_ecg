@@ -51,6 +51,12 @@ HTML_TEMPLATE = """
 </html>
 """
 
+@app.route('/time')
+def get_time():
+    now = datetime.now().isoformat() + "Z"
+    print(now)
+    return jsonify({'time': now})
+
 @app.route("/")
 def index():
     """Отображает список файлов в папке data."""

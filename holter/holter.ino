@@ -4,7 +4,8 @@
 #include <SD.h>
 #include <WiFi.h>
 #include <HTTPClient.h>
-// #include "esp_adc/adc_cali.h"
+#include <ArduinoJson.h>  // Подключаем ArduinoJson для разбора JSON
+#include <time.h>
 
 // --- Пины ---
 #define MMA8452_ADDRESS 0x1C
@@ -35,6 +36,7 @@
 #define WIFI_SSID "Odeyalo"
 #define WIFI_PASS "20012005"
 #define SERVER_URL "http://192.168.3.6:5000/data"
+#define SERVER_URL_TIME "http://192.168.3.6:5000/time"
 
 // Имя устройства для отправки на сервер
 #define DEVICE_NAME "esp_device"
@@ -75,6 +77,55 @@ void setup() {
         Serial.println("\nWi-Fi не подключился, запись только на SD-карту!");
     }
 
+    // Запрос времени с сервера
+    if (wifiConnected) {
+        HTTPClient http;
+        http.begin(SERVER_URL_TIME);
+        int httpCode = http.GET();
+        if (httpCode > 0) {
+            String payload = http.getString();
+            Serial.println("Получено время с сервера:");
+            Serial.println(payload);
+
+            // Разбор JSON: ожидаем формат {"time": "2025-04-05T11:46:01.490650Z"}
+            const size_t capacity = JSON_OBJECT_SIZE(1) + 60;
+            DynamicJsonDocument doc(capacity);
+            DeserializationError error = deserializeJson(doc, payload);
+            if (!error) {
+                const char* timeStr = doc["time"];
+                Serial.print("Распарсенное время: ");
+                Serial.println(timeStr);
+
+                // Парсим строку ISO 8601: "YYYY-MM-DDTHH:MM:SS" (микросекунды можно игнорировать)
+                int year, month, day, hour, minute, second;
+                sscanf(timeStr, "%d-%d-%dT%d:%d:%d", &year, &month, &day, &hour, &minute, &second);
+                Serial.printf("Parsed: %d-%02d-%02d %02d:%02d:%02d\n", year, month, day, hour, minute, second);
+
+                // Устанавливаем системное время
+                struct tm t;
+                t.tm_year = year - 1900;
+                t.tm_mon  = month - 1;
+                t.tm_mday = day;
+                t.tm_hour = hour;
+                t.tm_min  = minute;
+                t.tm_sec  = second;
+                t.tm_isdst = 0;
+                time_t t_of_day = mktime(&t);
+                timeval tv = { t_of_day, 0 };
+                settimeofday(&tv, NULL);
+                Serial.println("Системное время установлено.");
+            } else {
+                Serial.println("Ошибка разбора JSON времени.");
+            }
+        } else {
+            Serial.printf("HTTP GET не выполнен, ошибка: %s\n", http.errorToString(httpCode).c_str());
+        }
+        http.end();
+    }
+
+    // Отключаем Wi‑Fi для экономии энергии
+    WiFi.disconnect(true);
+    WiFi.mode(WIFI_OFF);
     startMeasureTime = millis();
     startUploadTime = millis();
 }
@@ -281,7 +332,7 @@ void sendDataFromSDToServer() {
             http.begin(SERVER_URL);
             http.addHeader("Content-Type", "application/json");
             int httpResponseCode = http.POST(payload);
-            // Serial.printf("Ответ сервера: %d\n", httpResponseCode);
+            Serial.printf("Ответ сервера: %d\n", httpResponseCode);
             http.end();
         }
       }
